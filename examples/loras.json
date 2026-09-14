@@ -1,0 +1,14 @@
+{
+  "loras": {
+    "cinematic": {
+      "path": "/srv/ltx-models/loras/cinematic-ltx-2.5.safetensors",
+      "kind": "style",
+      "base_model": "ltx-2.5"
+    },
+    "reference": {
+      "path": "/srv/ltx-models/loras/reference-ltx-2.5.safetensors",
+      "kind": "ic",
+      "base_model": "ltx-2.5"
+    }
+  }
+}

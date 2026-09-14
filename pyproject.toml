@@ -1,0 +1,87 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ltx-server"
+version = "0.4.0"
+description = "A lightweight headless REST API for local LTX video generation"
+readme = "README.md"
+requires-python = ">=3.12,<3.15"
+dependencies = [
+  "fastapi>=0.135,<1",
+  "uvicorn>=0.41,<1",
+  "pydantic-settings>=2.13,<3",
+  "python-multipart>=0.0.22,<1",
+  "pillow>=12.1,<13",
+  "nvidia-ml-py>=13,<14",
+]
+
+[project.optional-dependencies]
+inference = [
+  "ltx-core==1.3.0; sys_platform == 'linux' and platform_machine == 'x86_64'",
+  "ltx-pipelines==1.3.0; sys_platform == 'linux' and platform_machine == 'x86_64'",
+  "torch==2.10.0; sys_platform == 'linux' and platform_machine == 'x86_64'",
+  "torchvision==0.25.0; sys_platform == 'linux' and platform_machine == 'x86_64'",
+  "torchaudio==2.10.0; sys_platform == 'linux' and platform_machine == 'x86_64'",
+  "transformers==5.14.1; sys_platform == 'linux' and platform_machine == 'x86_64'",
+  "huggingface-hub>=0.34,<2; sys_platform == 'linux' and platform_machine == 'x86_64'",
+  "sentencepiece>=0.2,<1; sys_platform == 'linux' and platform_machine == 'x86_64'",
+  "protobuf>=5,<8; sys_platform == 'linux' and platform_machine == 'x86_64'",
+]
+
+[tool.uv]
+environments = ["sys_platform == 'darwin'", "sys_platform == 'linux' and platform_machine == 'x86_64'"]
+
+[tool.uv.sources]
+ltx-core = { git = "https://github.com/Lightricks/LTX-2.git", rev = "a95ab856bf29407b6b066ede0abe1846050db56c", subdirectory = "packages/ltx-core" }
+ltx-pipelines = { git = "https://github.com/Lightricks/LTX-2.git", rev = "a95ab856bf29407b6b066ede0abe1846050db56c", subdirectory = "packages/ltx-pipelines" }
+torch = { index = "pytorch-cu128", marker = "sys_platform == 'linux'" }
+torchvision = { index = "pytorch-cu128", marker = "sys_platform == 'linux'" }
+torchaudio = { index = "pytorch-cu128", marker = "sys_platform == 'linux'" }
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+# Mirror the exact pinned core's dependency metadata so its own CUDA-index settings
+# do not override this application's matched torch/torchaudio/torchvision stack.
+[[tool.uv.dependency-metadata]]
+name = "ltx-core"
+version = "1.3.0"
+requires-dist = [
+  "torch~=2.7", "torchaudio", "torchvision", "einops", "numpy", "av",
+  "transformers>=5.8.0,<5.15", "safetensors", "accelerate", "scipy>=1.14",
+  "mps-sdpa>=0.4.0; sys_platform == 'darwin' and platform_machine == 'arm64'",
+]
+
+[dependency-groups]
+dev = ["pytest>=9,<10", "pytest-asyncio>=1.3,<2", "httpx>=0.28,<1", "ruff>=0.15,<1", "mypy>=1.19,<2"]
+
+[project.scripts]
+ltx-server = "ltx_server.main:run"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
+
+[tool.ruff.lint.per-file-ignores]
+# Poll thread-safe cancellation and the public job contract in test doubles only.
+"tests/*.py" = ["ASYNC110"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+packages = ["ltx_server"]
+
+[[tool.mypy.overrides]]
+module = ["pynvml", "torch", "ltx_core.*", "ltx_pipelines.*", "huggingface_hub", "sageattention"]
+ignore_missing_imports = true

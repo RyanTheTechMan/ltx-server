@@ -1,0 +1,34 @@
+[Unit]
+Description=Headless LTX HTTP server
+After=network.target
+
+[Service]
+Type=simple
+User=ltx-server
+Group=ltx-server
+WorkingDirectory=/opt/ltx-server
+EnvironmentFile=/opt/ltx-server/.env
+Environment=PYTHONUNBUFFERED=1
+Environment=HOME=/var/lib/ltx-server
+Environment=XDG_CACHE_HOME=/var/lib/ltx-server/cache
+Environment=HF_HOME=/var/lib/ltx-server/cache/huggingface
+Environment=TORCH_HOME=/var/lib/ltx-server/cache/torch
+Environment=TORCHINDUCTOR_CACHE_DIR=/var/lib/ltx-server/cache/torchinductor
+Environment=TRITON_CACHE_DIR=/var/lib/ltx-server/cache/triton
+ExecStart=/opt/ltx-server/.venv/bin/ltx-server
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=120
+KillSignal=SIGTERM
+StateDirectory=ltx-server
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/ltx-server
+# Leave NVIDIA device nodes visible for CUDA. Do not enable PrivateDevices.
+
+[Install]
+WantedBy=multi-user.target

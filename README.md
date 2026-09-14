@@ -34,6 +34,9 @@ Other entry points are `uv run python -m ltx_server` and
 
 ## Linux / RTX 5090 setup
 
+See the [Linux LXC deployment guide](docs/linux-lxc.md) for a complete first install,
+GPU access checks, environment configuration and an automatically starting systemd service.
+
 Use a dedicated non-root service account. NVIDIA devices and compatible driver
 libraries must be visible inside the LXC; check `nvidia-smi` there. Install Python
 3.12–3.14, uv, Git and the system media tools:
@@ -258,7 +261,9 @@ per-directory locks prevent accidental concurrent instances using the same stora
 The [systemd example](deploy/systemd/ltx-server.service) expects `/opt/ltx-server`
 and `DATA_DIR=/var/lib/ltx-server`. Install the checkout/virtualenv under `/opt`,
 create the `ltx-server` account, and restrict `.env` permissions to that account.
-Systemd creates the state directory. GPU devices remain visible. SIGTERM stops
+Keep uv-managed Python under `/opt/ltx-server/.python` as described in the deployment
+guide; the unit hides `/home` and `/root`. Systemd creates the state directory and
+uses writable caches beneath it. GPU devices remain visible. SIGTERM stops
 admission, cancels queued work and waits for active work before releasing resources.
 The unit's shutdown timeout should be reviewed after measuring cancellation latency.
 
