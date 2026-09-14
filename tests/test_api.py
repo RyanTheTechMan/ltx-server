@@ -249,3 +249,39 @@ async def test_simultaneous_admission_does_not_overfill(app_factory):
         )
         assert sum(r.status_code == 202 for r in responses) == 2
         assert app.state.jobs.queue_info().length == 2
+
+
+async def test_portrait_and_retake_capabilities(app_factory):
+    from .conftest import ControlledBackend, wait_terminal
+
+    async with app_factory(ControlledBackend()) as (app, client):
+        catalog = (await client.get("/v1/models")).json()
+        assert catalog["models"][0]["capabilities"]["retake_normalize_source"]
+        assert catalog["orientations"] == ["landscape", "portrait"]
+        assert catalog["retake_normalization_fps"] == 24
+        assert catalog["resolution_presets"]["540p"] == [1024, 576]
+        response = await client.post(
+            "/v1/generations",
+            json={
+                "prompt": "portrait",
+                "orientation": "portrait",
+                "duration": 1,
+            },
+        )
+        assert response.status_code == 202
+        record = await wait_terminal(app, response.json()["id"])
+        output = (await client.get(f"/v1/generations/{record.info.id}")).json()["output"]
+        assert (output["width"], output["height"], output["frames"]) == (576, 1024, 25)
+        assert output["duration"] == 25 / 24
+
+
+@pytest.mark.parametrize("audio", [False, True])
+async def test_uploaded_video_reports_audio(app_factory, tmp_path, audio):
+    from .test_video_inputs import make_clip
+
+    source = tmp_path / "input.mp4"
+    make_clip(source, audio=audio)
+    async with app_factory() as (_, client):
+        result = await client.post("/v1/assets", files={"file": ("input.mp4", source.read_bytes())})
+        assert result.status_code == 201
+        assert result.json()["has_audio"] is audio

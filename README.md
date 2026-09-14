@@ -208,11 +208,14 @@ remixed to stereo by FFmpeg.
 With no source audio, it omits the generated track; the joint model still computes
 audio internally. Advanced workflows are described below.
 
-| Preset | Actual dimensions |
-| --- | --- |
-| 540p | 1024 × 576 |
-| 720p | 1280 × 704 |
-| 1080p | 1920 × 1088 |
+`orientation` defaults to `landscape`. Set `"orientation": "portrait"` to swap
+the preset dimensions; both orientations preserve LTX's dimension grid.
+
+| Preset | Landscape | Portrait |
+| --- | --- | --- |
+| 540p | 1024 × 576 | 576 × 1024 |
+| 720p | 1280 × 704 | 704 × 1280 |
+| 1080p | 1920 × 1088 | 1088 × 1920 |
 
 FPS accepts 24, 25 or 30. Requested duration accepts 1–20 seconds, subject to server
 limits. Frames round to the nearest `8k+1`, ties upward: 10 seconds at 24 fps gives
@@ -250,6 +253,9 @@ Uploads support static PNG/JPEG/WebP images, WAV/MP3/FLAC/Ogg audio and MP4/M4A/
 media. Content, not filename/MIME, determines type. Pillow fully decodes images;
 ffprobe checks streams and FFmpeg decodes a bounded sample. Upload limits default to
 50/100/500 MiB and include a multipart-body cap for chunked requests. Audio uploads support conditioning; video uploads can drive IC-LoRA or retake.
+Asset metadata includes `has_audio`: true for audio assets and videos containing
+an audio stream, false for images and silent videos. Uploading stores the original;
+retake normalization happens later in the worker and never changes that asset.
 
 Storage paths derive from `DATA_DIR`; optional overrides are in [.env.example](.env.example).
 Mutable directories must be separate, service-owned and on the same filesystem.
@@ -368,16 +374,70 @@ Retake regenerates a time window of an uploaded video:
 }
 ```
 
-The uploaded source must match the request's **normalized frame count, FPS and
-actual dimensions**. Retake performs no implicit resizing or duration changes;
-server-generated videos are suitable inputs when the same request grid is used.
+By default, the uploaded source must be upright and match the request's
+**normalized frame count, FPS and actual dimensions**. `retake.normalize_source`
+defaults to false, preserving strict validation for existing callers.
+Server-generated videos are suitable inputs when the same request grid is used.
+
+For ordinary uploaded videos, opt into normalization:
+
+```json
+{
+  "prompt": "The subject smiles",
+  "duration": 5,
+  "resolution": "540p",
+  "orientation": "portrait",
+  "retake": {
+    "video": "asset_REPLACE_VIDEO",
+    "start": 1.0,
+    "end": 3.0,
+    "normalize_source": true,
+    "regenerate_video": true,
+    "regenerate_audio": false
+  }
+}
+```
+
+The worker applies display rotation, corrects pixel aspect ratio, scales to fill
+and center-crops to the oriented preset. It converts to **24 FPS** and trims or
+holds the final frame to reach the requested duration's `8k+1` frame count. This
+example produces 576 × 1024, 121 frames, approximately 5.042 seconds. An explicitly
+supplied FPS other than 24 is rejected for normalized retakes; an omitted FPS uses
+24 even when the server's default differs. Other generation and strict retake
+requests continue to accept 24, 25 and 30 FPS.
+
+Existing audio is retained during preparation, converted to stereo 48 kHz AAC,
+trimmed or padded with silence to match the video. A silent input stays silent at
+this step. Prepared inputs must pass the same strict retake grid checks before
+inference. This is source preparation for an edit, not a standalone AI upscaler.
+Discover support through `/v1/models`:
+`models[].capabilities.retake_normalize_source`, `retake_normalization_fps`, and
+`orientations`. `resolution_presets` retains landscape dimensions for compatibility;
+swap each pair for portrait. Use job `output.width`, `output.height`, `output.frames`,
+`output.fps`, `output.duration`, and `output.has_audio` for the actual result.
+
 The interval is measured in seconds from source start, must be nonempty and inside
 the clip, and must regenerate at least one modality. Style LoRAs are allowed;
 other conditioning fields cannot be combined with retake. `generate_audio=false`
-only mutes the final output. The official retake pipeline encodes/decodes the source
-through its VAEs: unchanged regions/modalities are model-conditioned, not guaranteed
-pixel-identical or bit-identical copies of the original. Preservation quality and
-window boundaries need visual/audio review on the GPU host.
+always mutes the final output. Stream preservation applies to strict and normalized
+retakes:
+
+- Video-only edits (`regenerate_audio=false`) use the prepared/source audio rather
+  than model-decoded audio. Silent sources produce silent output. AAC encoding
+  preserves the audio content, not the original compressed bytes.
+- Audio-only edits (`regenerate_video=false`) use the prepared/source video rather
+  than model-decoded video. H.264 is stream-copied; other strict-source codecs are
+  transcoded to the server's H.264 output format. Normalization itself resizes and
+  re-encodes the original, so preservation refers to the prepared video.
+- Edited modalities still pass through LTX's VAEs; regions outside the edit window
+  are not guaranteed pixel/sample-identical. Quality and window boundaries need
+  visual/audio review on the GPU host.
+
+Preparation subprocesses are cancellable and bounded by
+`MEDIA_PREPARE_TIMEOUT_SECONDS` (120 seconds) and `MAX_PREPARED_VIDEO_MB` (512 MiB).
+Metadata/frame validation uses `MEDIA_PROBE_TIMEOUT_SECONDS` (30 seconds). Exceeding
+a limit fails the job. Scratch files are protected during active work, removed on
+success/failure/cancellation and eligible for orphan cleanup after restart.
 
 Hardware smoke examples (stop the server first):
 
@@ -385,6 +445,8 @@ Hardware smoke examples (stop the server first):
 uv run --extra inference python scripts/smoke_test.py --gpu --lora cinematic 0.8
 uv run --extra inference python scripts/smoke_test.py --gpu --reference-video control.mp4 --reference-lora reference
 uv run --extra inference python scripts/smoke_test.py --gpu --retake-video source.mp4 --duration 5 --start 1 --end 3
+uv run --extra inference python scripts/smoke_test.py --gpu --retake-video phone.mp4 --normalize-source --orientation portrait --retake-mode video --duration 5 --start 1 --end 3
+uv run --extra inference python scripts/smoke_test.py --gpu --retake-video phone.mp4 --normalize-source --retake-mode audio --duration 5 --start 1 --end 3
 uv run --extra inference python scripts/benchmark.py --all --dry-run
 ```
 

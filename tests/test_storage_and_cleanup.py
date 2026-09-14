@@ -195,3 +195,24 @@ async def test_periodic_cleanup_runs(app_factory):
         async with asyncio.timeout(2):
             while path.exists():
                 await asyncio.sleep(0.001)
+
+
+async def test_prepared_retake_scratch_is_protected_and_reaped(app_factory):
+    backend = ControlledBackend(blocked=True)
+    async with app_factory(backend) as (app, client):
+        identifier = (await client.post("/v1/generations", json={"prompt": "x"})).json()["id"]
+        await backend.started.wait()
+        scratch = app.state.storage.path("tmp", f"{identifier}.source.partial")
+        scratch.write_bytes(b"prepared source")
+        os.utime(scratch, (0, 0))
+        app.state.cleanup.sweep()
+        assert scratch.exists()
+        backend.release.set()
+        await wait_terminal(app, identifier)
+        app.state.cleanup.sweep()
+        assert not scratch.exists()
+        orphan = app.state.storage.path("tmp", f"{new_id('gen')}.source.partial")
+        orphan.write_bytes(b"abandoned source")
+        os.utime(orphan, (0, 0))
+        app.state.cleanup.sweep()
+        assert not orphan.exists()

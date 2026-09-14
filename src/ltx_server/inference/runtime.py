@@ -10,6 +10,7 @@ import sys
 import tempfile
 import time
 from collections.abc import Iterator
+from pathlib import Path
 from threading import Event
 from typing import Any
 
@@ -26,8 +27,14 @@ from ltx_server.inference.lifecycle import CallAdapter, RetainedModel
 from ltx_server.inference.models import LTX_COMMIT, ModelInventory
 from ltx_server.inference.performance import attention, pipeline_options
 from ltx_server.jobs.state import JobStatus, OutputInfo
-from ltx_server.media.ffmpeg import encode_mp4, inspect_output
-from ltx_server.media.video_inputs import prepare_reference, validate_retake_source
+from ltx_server.media.ffmpeg import decode_source_audio, encode_mp4, inspect_output
+from ltx_server.media.video_inputs import (
+    VideoSource,
+    encode_source_video,
+    prepare_reference,
+    prepare_retake,
+    validate_retake_source,
+)
 from ltx_server.schemas.generation import GenerationSpec
 
 logger = logging.getLogger(__name__)
@@ -250,6 +257,9 @@ class LTXRuntime:
         self.timings = {}
         self._stage_name = None
         spec = context.spec
+        scratch: Path | None = None
+        source: Path | None = None
+        source_info: VideoSource | None = None
         try:
             self.check()
             with self.torch.inference_mode():
@@ -281,7 +291,15 @@ class LTXRuntime:
                 if spec.retake:
                     self.report(JobStatus.ENCODING)
                     source = context.asset_paths[spec.retake.video]
-                    validate_retake_source(source, spec, self.settings)
+                    if spec.retake.normalize_source:
+                        candidate = context.partial_path.with_suffix(".source.partial")
+                        candidate.touch(exist_ok=False)
+                        scratch = candidate
+                        prepare_retake(source, scratch, spec, self.settings, context.cancel)
+                        source = scratch
+                    source_info = validate_retake_source(
+                        source, spec, self.settings, context.cancel
+                    )
                     self.check()
                     result = self.pipeline(
                         video_path=str(source),
@@ -334,7 +352,23 @@ class LTXRuntime:
 
                 # Anonymous audio storage leaves no named artifact after a crash.
                 with tempfile.TemporaryFile(dir=context.partial_path.parent) as audio_file:
-                    if spec.generate_audio:
+                    has_audio = spec.generate_audio
+                    audio_rate = 48000
+                    preserve_audio = spec.retake is not None and not spec.retake.regenerate_audio
+                    if preserve_audio:
+                        assert source is not None and source_info is not None
+                        has_audio = has_audio and source_info.has_audio
+                    if has_audio and preserve_audio:
+                        assert source is not None
+                        audio_file.write(
+                            decode_source_audio(
+                                source,
+                                duration=spec.frames / spec.fps,
+                                cancel=context.cancel,
+                                settings=self.settings,
+                            )
+                        )
+                    elif has_audio:
                         if result.audio is None:
                             raise ServiceError(
                                 ErrorCode.OUTPUT_ENCODING_FAILED, "LTX returned no audio"
@@ -351,19 +385,34 @@ class LTXRuntime:
                                 ErrorCode.OUTPUT_ENCODING_FAILED, "Invalid LTX audio samples"
                             )
                         audio_file.write(waveform.contiguous().numpy().astype("<f4").tobytes())
-                    encode_mp4(
-                        chunks(),
-                        context.partial_path,
-                        width=spec.width,
-                        height=spec.height,
-                        frames=spec.frames,
-                        fps=spec.fps,
-                        cancel=context.cancel,
-                        settings=self.settings,
-                        audio=audio_file if spec.generate_audio else None,
-                        audio_rate=result.audio.sampling_rate if spec.generate_audio else 48000,
-                        on_flush=lambda: self.report(JobStatus.ENCODING_OUTPUT),
-                    )
+                        audio_rate = result.audio.sampling_rate
+                    if spec.retake and not spec.retake.regenerate_video:
+                        assert source is not None and source_info is not None
+                        self.report(JobStatus.ENCODING_OUTPUT)
+                        encode_source_video(
+                            source,
+                            context.partial_path,
+                            spec,
+                            self.settings,
+                            context.cancel,
+                            codec=source_info.codec,
+                            audio=audio_file if has_audio else None,
+                            audio_rate=audio_rate,
+                        )
+                    else:
+                        encode_mp4(
+                            chunks(),
+                            context.partial_path,
+                            width=spec.width,
+                            height=spec.height,
+                            frames=spec.frames,
+                            fps=spec.fps,
+                            cancel=context.cancel,
+                            settings=self.settings,
+                            audio=audio_file if has_audio else None,
+                            audio_rate=audio_rate,
+                            on_flush=lambda: self.report(JobStatus.ENCODING_OUTPUT),
+                        )
                 self.check()
                 output = inspect_output(
                     context.partial_path,
@@ -372,7 +421,8 @@ class LTXRuntime:
                     height=spec.height,
                     frames=spec.frames,
                     fps=spec.fps,
-                    has_audio=spec.generate_audio,
+                    has_audio=has_audio,
+                    cancel=context.cancel,
                 )
                 self.timings["peak_vram_mb"] = self.torch.cuda.max_memory_allocated(
                     self.settings.gpu_device
@@ -400,6 +450,8 @@ class LTXRuntime:
                 self.video_iterator = None
                 self.context = None
                 self.audio_conditioning.clear()
+                if scratch is not None:
+                    scratch.unlink(missing_ok=True)
             if self.transformer and not failed:
                 self.transformer.park()
 

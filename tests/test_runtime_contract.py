@@ -204,7 +204,9 @@ def fake_upstream(monkeypatch):
     monkeypatch.setattr(
         runtime_module,
         "inspect_output",
-        lambda path, settings, **kw: OutputInfo(**kw, duration=kw["frames"] / kw["fps"]),
+        lambda path, settings, cancel=None, **kw: OutputInfo(
+            **kw, duration=kw["frames"] / kw["fps"]
+        ),
     )
     return builds, calls
 

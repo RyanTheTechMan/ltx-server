@@ -7,6 +7,7 @@ from ltx_server.config import Settings
 from ltx_server.errors import ErrorCode, ServiceError
 
 Resolution = Literal["540p", "720p", "1080p"]
+Orientation = Literal["landscape", "portrait"]
 AssetId = Annotated[str, Field(pattern=r"^asset_[0-9a-f]{32}$")]
 # Official distilled two-stage pipeline requires both dimensions divisible by 64.
 # Desktop uses the same grid. See docs/ltx-desktop-reference.md for pinned sources.
@@ -43,6 +44,7 @@ class Retake(StrictModel):
     end: float = Field(gt=0, le=21)
     regenerate_video: bool = True
     regenerate_audio: bool = True
+    normalize_source: bool = False
 
     @model_validator(mode="after")
     def validate_window(self) -> Self:
@@ -57,6 +59,7 @@ class GenerationRequest(StrictModel):
     prompt: str = Field(min_length=1, max_length=10000)
     duration: float | None = Field(default=None, ge=1, le=20)
     resolution: Resolution | None = None
+    orientation: Orientation = "landscape"
     fps: Literal[24, 25, 30] | None = None
     generate_audio: bool | None = None
     seed: int | None = Field(default=None, ge=0, le=2**32 - 1)
@@ -88,6 +91,8 @@ class GenerationRequest(StrictModel):
             or self.keyframes
         ):
             raise ValueError("Retake cannot be combined with other conditioning")
+        if self.retake and self.retake.normalize_source and self.fps not in (None, 24):
+            raise ValueError("Normalized retakes require 24 FPS")
         if not self.prompt.strip():
             raise ValueError("Prompt must contain non-whitespace characters")
         if self.last_frame and not self.first_frame:
@@ -135,6 +140,11 @@ def normalize_request(request: GenerationRequest, settings: Settings, seed: int)
     )
     resolution = request.resolution or settings.default_resolution
     fps = request.fps or settings.default_fps
+    if request.retake and request.retake.normalize_source:
+        fps = 24
+    width, height = RESOLUTIONS[resolution]
+    if request.orientation == "portrait":
+        width, height = height, width
     if duration > settings.max_duration_seconds:
         raise ServiceError(ErrorCode.INVALID_DURATION, "Duration exceeds the server maximum", 422)
     if list(RESOLUTIONS).index(resolution) > list(RESOLUTIONS).index(settings.max_resolution):
@@ -157,8 +167,8 @@ def normalize_request(request: GenerationRequest, settings: Settings, seed: int)
             else settings.default_generate_audio
         ),
         seed=request.seed if request.seed is not None else seed,
-        width=RESOLUTIONS[resolution][0],
-        height=RESOLUTIONS[resolution][1],
+        width=width,
+        height=height,
         frames=frames,
     )
     return GenerationSpec.model_validate(values)

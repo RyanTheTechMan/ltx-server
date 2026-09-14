@@ -189,8 +189,24 @@ builds keep upstream's transient disposal. Reference normalization uses the job'
 existing managed partial as scratch; the upstream call consumes it fully before
 output encoding overwrites it. Failure/cancellation deletes the partial, and only
 the validated final generation can be published. Retake uses the official distilled
-pipeline and checks the complete source video grid before inference. No arbitrary
-source-video resizing/trimming is hidden in retake.
+pipeline and checks the complete source video grid before inference. Retake's
+optional `normalize_source` prepares ordinary video inside the worker at 24 FPS,
+applying display rotation, oriented scale/crop and trim/final-frame padding.
+Audio is retained and padded/trimmed to the same span. Both strict and normalized
+sources pass the same grid validator before entering the pipeline.
+
+Retake preparation uses `gen_<id>.source.partial` beside the output partial, because
+encoding may still need the prepared input. The runtime closes lazy video iterators
+before unlinking this scratch file in `finally`. Cleanup protects it by the owning
+job ID and reaps abandoned files after the temporary-file TTL. Process execution,
+probing and output validation poll cancellation and enforce wall-time/size limits.
+
+Video-only edits select source PCM for output and retain silent inputs as silent.
+Audio-only edits bypass model-decoded output video and copy the source H.264 stream
+(transcoding other strict-source codecs). The pipeline still conditions on both
+modalities; the output selection prevents an unnecessary VAE round trip for the
+unedited stream. Explicit output muting takes precedence. Generation metadata comes
+from final MP4 validation and reports actual dimensions, duration and audio presence.
 
 Official CPU/disk streaming owns model lifetime, so the server disables its retained
 transformer/text hooks in those modes. Attention is changed per builder through the

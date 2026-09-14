@@ -47,6 +47,8 @@ class Settings(BaseSettings):
     ffmpeg_path: str = "ffmpeg"
     ffprobe_path: str = "ffprobe"
     media_probe_timeout_seconds: float = Field(default=30, gt=0)
+    media_prepare_timeout_seconds: float = Field(default=120, gt=0)
+    max_prepared_video_mb: int = Field(default=512, gt=0)
     cors_origins: str = ""
     inference_backend: Literal["auto", "ltx", "disabled"] = "auto"
     ltx_model: Literal["ltx-2.5-fast"] = "ltx-2.5-fast"

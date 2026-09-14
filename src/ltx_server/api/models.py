@@ -19,6 +19,7 @@ class ModelCapabilities(BaseModel):
     reference_video: bool = False
     loras: bool = False
     retake: bool = False
+    retake_normalize_source: bool = False
 
 
 class ModelInfo(BaseModel):
@@ -35,6 +36,8 @@ class ModelCatalog(BaseModel):
     models: list[ModelInfo] = Field(default_factory=list)
     inference_available: bool = False
     resolution_presets: dict[str, tuple[int, int]]
+    orientations: list[str] = Field(default_factory=lambda: ["landscape", "portrait"])
+    retake_normalization_fps: int = 24
     registered_loras: list[dict[str, str | bool]] = Field(default_factory=list)
     default_ic_lora: str | None = None
     note: str = (
@@ -67,6 +70,7 @@ async def models(request: Request) -> ModelCatalog:
                     reference_video=True,
                     loras=True,
                     retake=True,
+                    retake_normalize_source=True,
                 ),
             )
         ],

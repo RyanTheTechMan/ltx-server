@@ -250,3 +250,217 @@ def test_sage_adapter_uses_nhd_and_no_mask(monkeypatch):
     ]
     with pytest.raises(ValueError):
         attention(q, k, v, 2, mask=object())
+
+
+@pytest.mark.parametrize(
+    "mode,source_audio,mute",
+    [
+        ("video", True, False),
+        ("video", False, False),
+        ("video", True, True),
+        ("audio", True, False),
+        ("audio", False, False),
+    ],
+)
+def test_normalized_retake_preserves_unedited_stream(
+    fake_upstream,
+    tmp_path,
+    monkeypatch,
+    mode,
+    source_audio,
+    mute,
+):
+    import struct
+    from types import SimpleNamespace
+
+    import ltx_server.inference.runtime as module
+    from ltx_server.media.ffmpeg import decode_source_audio
+
+    from .test_video_inputs import make_clip
+
+    base = sys.modules["ltx_pipelines.distilled"].DistilledPipeline
+    observed = {}
+
+    class Retake(base):
+        def __init__(self, **kwargs):
+            kwargs.pop("distilled")
+            super().__init__(spatial_upsampler_path="unused", **kwargs)
+
+        def __call__(
+            self, video_path, start_time, end_time, regenerate_video, regenerate_audio, **kwargs
+        ):
+            from pathlib import Path
+
+            prepared = Path(video_path)
+            observed["prepared"] = prepared
+            assert prepared != source and prepared.exists()
+            if source_audio:
+                observed["pcm"] = decode_source_audio(
+                    prepared, duration=25 / 24, cancel=Event(), settings=settings
+                )
+            return super().__call__(
+                width=64, height=96, num_frames=25, frame_rate=24, images=[], **kwargs
+            )
+
+    install_module(monkeypatch, "ltx_pipelines.retake", RetakePipeline=Retake)
+    source = tmp_path / "source.mp4"
+    make_clip(source, audio=source_audio)
+    original = source.read_bytes()
+    settings = Settings(_env_file=None, data_dir=tmp_path)
+    asset = "asset_" + "a" * 32
+    spec = normalize_request(
+        GenerationRequest(
+            prompt="x",
+            duration=1,
+            orientation="portrait",
+            generate_audio=not mute,
+            retake={
+                "video": asset,
+                "start": 0,
+                "end": 1,
+                "normalize_source": True,
+                "regenerate_video": mode == "video",
+                "regenerate_audio": mode == "audio",
+            },
+        ),
+        settings,
+        1,
+    ).model_copy(update={"width": 64, "height": 96})
+    runtime = LTXRuntime(settings, ModelInventory(settings), Event())
+    runtime.load(spec=spec)
+
+    class Wave:
+        ndim = 2
+        shape = (4, 2)
+
+        def detach(self):
+            return self
+
+        float = cpu = contiguous = numpy = detach
+
+        def astype(self, dtype):
+            return self
+
+        def tobytes(self):
+            return struct.pack("<8f", *([0.1] * 8))
+
+    if mode == "audio":
+        runtime.pipeline.audio = SimpleNamespace(waveform=Wave(), sampling_rate=24000)
+        monkeypatch.setattr(
+            runtime.torch,
+            "isfinite",
+            lambda w: SimpleNamespace(all=lambda: SimpleNamespace(item=lambda: True)),
+            raising=False,
+        )
+        real_mux = module.encode_source_video
+
+        def mux(source_path, *args, **kwargs):
+            assert source_path == observed["prepared"]
+            observed["copied_video"] = True
+            return real_mux(source_path, *args, **kwargs)
+
+        monkeypatch.setattr(module, "encode_source_video", mux)
+        monkeypatch.setattr(module, "encode_mp4", lambda *a, **kw: pytest.fail("Used model video"))
+    else:
+        runtime.pipeline.audio = None  # Must never use generated audio for video-only edits.
+
+        def encode(chunks, path, **kwargs):
+            assert list(chunks) == [b"pixels"]
+            if source_audio and not mute:
+                kwargs["audio"].seek(0)
+                assert kwargs["audio"].read() == observed["pcm"]
+            else:
+                assert kwargs["audio"] is None
+            path.write_bytes(b"stub")
+            kwargs["on_flush"]()
+
+        monkeypatch.setattr(module, "encode_mp4", encode)
+    try:
+        result = runtime.generate(
+            GenerationContext(
+                "gen_test", spec, tmp_path / "out.partial", {asset: source}, Event(), lambda s: None
+            )
+        )
+        assert result.has_audio == (not mute and (source_audio or mode == "audio"))
+        assert (result.width, result.height, result.frames) == (64, 96, 25)
+        if mode == "audio":
+            assert observed["copied_video"]
+        assert not observed["prepared"].exists()
+        assert source.read_bytes() == original
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("failure", ["preparation", "validation", "inference", "cancel"])
+def test_retake_scratch_removed_on_failure(fake_upstream, tmp_path, monkeypatch, failure):
+    from pathlib import Path
+
+    import ltx_server.inference.runtime as module
+    from ltx_server.media.video_inputs import VideoSource
+
+    base = sys.modules["ltx_pipelines.distilled"].DistilledPipeline
+    called = []
+
+    class Retake(base):
+        def __init__(self, **kwargs):
+            kwargs.pop("distilled")
+            super().__init__(spatial_upsampler_path="unused", **kwargs)
+
+        def __call__(self, **kwargs):
+            called.append("inference")
+            assert Path(kwargs["video_path"]).exists()
+            raise ServiceError("INVALID_MEDIA", "fixture failure")
+
+    install_module(monkeypatch, "ltx_pipelines.retake", RetakePipeline=Retake)
+
+    def prepare(source, destination, spec, settings, cancel):
+        destination.write_bytes(b"partial preparation")
+        if failure == "preparation":
+            raise ServiceError("INVALID_MEDIA", "fixture failure")
+        if failure == "cancel":
+            cancel.set()
+
+    def validate(*args):
+        called.append("validation")
+        if failure == "validation":
+            raise ServiceError("INVALID_INPUT", "fixture failure")
+        return VideoSource(False, "h264")
+
+    monkeypatch.setattr(module, "prepare_retake", prepare)
+    monkeypatch.setattr(module, "validate_retake_source", validate)
+    settings = Settings(_env_file=None, data_dir=tmp_path)
+    asset = "asset_" + "a" * 32
+    source = tmp_path / "original.bin"
+    source.write_bytes(b"original")
+    spec = normalize_request(
+        GenerationRequest(
+            prompt="x",
+            retake={
+                "video": asset,
+                "start": 0,
+                "end": 1,
+                "normalize_source": True,
+            },
+        ),
+        settings,
+        1,
+    )
+    runtime = LTXRuntime(settings, ModelInventory(settings), Event())
+    runtime.load(spec=spec)
+    try:
+        with pytest.raises(ServiceError):
+            runtime.generate(
+                GenerationContext(
+                    "gen_test",
+                    spec,
+                    tmp_path / "out.partial",
+                    {asset: source},
+                    Event(),
+                    lambda s: None,
+                )
+            )
+        assert not (tmp_path / "out.source.partial").exists()
+        assert source.read_bytes() == b"original"
+        assert ("inference" in called) == (failure == "inference")
+    finally:
+        runtime.close()

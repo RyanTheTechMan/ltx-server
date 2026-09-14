@@ -19,6 +19,7 @@ class MediaInfo:
     width: int | None = None
     height: int | None = None
     duration: float | None = None
+    has_audio: bool = False
 
 
 def inspect_image(path: Path, max_pixels: int) -> MediaInfo | None:
@@ -132,6 +133,7 @@ async def validate_media(path: Path, settings: Settings) -> MediaInfo:
         if not math.isfinite(duration) or duration <= 0:
             raise ValueError("Invalid duration")
         streams = probe.get("streams", [])
+        has_audio = any(s.get("codec_type") == "audio" for s in streams)
         video = next(
             (
                 s
@@ -145,9 +147,9 @@ async def validate_media(path: Path, settings: Settings) -> MediaInfo:
             width, height = int(video["width"]), int(video["height"])
             if width <= 0 or height <= 0 or width * height > settings.max_image_pixels:
                 raise ValueError("Invalid video size")
-            info = MediaInfo("video", video_mime, width, height, duration)
-        elif any(s.get("codec_type") == "audio" for s in streams):
-            info = MediaInfo("audio", audio_mime, duration=duration)
+            info = MediaInfo("video", video_mime, width, height, duration, has_audio)
+        elif has_audio:
+            info = MediaInfo("audio", audio_mime, duration=duration, has_audio=True)
         else:
             raise ValueError("No audio or video stream")
     except (ValueError, KeyError, TypeError):

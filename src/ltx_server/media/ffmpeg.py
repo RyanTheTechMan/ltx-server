@@ -16,6 +16,7 @@ from ltx_server.config import Settings
 from ltx_server.errors import ErrorCode, ServiceError
 from ltx_server.inference.backend import check_cancelled
 from ltx_server.jobs.state import OutputInfo
+from ltx_server.media.processes import run_bounded
 
 
 def decode_source_audio(path: Path, *, duration: float, cancel: Event, settings: Settings) -> bytes:
@@ -241,9 +242,10 @@ def inspect_output(
     frames: int,
     fps: int,
     has_audio: bool,
+    cancel: Event | None = None,
 ) -> OutputInfo:
     try:
-        process = subprocess.run(
+        raw = run_bounded(
             [
                 settings.ffprobe_path,
                 "-v",
@@ -256,11 +258,10 @@ def inspect_output(
                 "json",
                 str(path),
             ],
-            capture_output=True,
-            check=True,
-            timeout=settings.media_probe_timeout_seconds,
+            cancel or Event(),
+            settings.media_probe_timeout_seconds,
         )
-        probe = json.loads(process.stdout)
+        probe = json.loads(raw)
         videos = [stream for stream in probe["streams"] if stream["codec_type"] == "video"]
         audios = [stream for stream in probe["streams"] if stream["codec_type"] == "audio"]
         video = videos[0]
@@ -290,6 +291,12 @@ def inspect_output(
             has_audio=has_audio,
             size_bytes=path.stat().st_size,
         )
+    except ServiceError as exc:
+        if exc.detail.code in {ErrorCode.GENERATION_CANCELLED, ErrorCode.MEDIA_UNAVAILABLE}:
+            raise
+        raise ServiceError(
+            ErrorCode.OUTPUT_VALIDATION_FAILED, "Encoded MP4 failed video/audio validation"
+        ) from None
     except FileNotFoundError:
         raise ServiceError(ErrorCode.MEDIA_UNAVAILABLE, "ffprobe is not installed", 503) from None
     except (OSError, subprocess.SubprocessError, ValueError, KeyError, IndexError, TypeError):

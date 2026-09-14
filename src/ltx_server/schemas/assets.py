@@ -14,3 +14,4 @@ class AssetInfo(BaseModel):
     width: int | None = None
     height: int | None = None
     duration: float | None = None
+    has_audio: bool = False

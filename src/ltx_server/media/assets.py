@@ -58,6 +58,7 @@ class AssetManager:
                 width=media.width,
                 height=media.height,
                 duration=media.duration,
+                has_audio=media.has_audio,
             )
             self.storage.publish(identifier, "assets")
             self.records[identifier] = AssetRecord(info)

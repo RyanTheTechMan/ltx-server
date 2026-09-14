@@ -89,6 +89,11 @@ async def test_gpu_smoke_stages_and_cleans_its_inputs(tmp_path, png, monkeypatch
         reference_lora=None,
         lora=[],
         retake_video=None,
+        normalize_source=False,
+        retake_mode="both",
+        resolution="540p",
+        orientation="landscape",
+        fps=24,
     )
     if invalid:
         with pytest.raises(ValueError):

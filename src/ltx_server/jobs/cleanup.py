@@ -55,7 +55,7 @@ class CleanupWorker:
         for area, ttl in areas:
             for path in self.storage.files(area):
                 if (
-                    path.stem not in protected[area]
+                    path.name.split(".", 1)[0] not in protected[area]
                     and path.stat().st_mtime + ttl <= now.timestamp()
                 ):
                     path.unlink(missing_ok=True)

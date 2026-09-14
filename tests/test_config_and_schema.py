@@ -96,3 +96,35 @@ def test_configured_limits_and_keyframe_bounds():
         with pytest.raises(ServiceError) as exc:
             normalize_request(GenerationRequest(prompt="x", **body), settings, 1)
         assert exc.value.detail.code == code
+
+
+@pytest.mark.parametrize("resolution", RESOLUTIONS)
+@pytest.mark.parametrize("orientation", ["landscape", "portrait"])
+def test_orientation_preserves_grid(resolution, orientation):
+    spec = normalize_request(
+        GenerationRequest(prompt="test", resolution=resolution, orientation=orientation),
+        Settings(_env_file=None),
+        1,
+    )
+    expected = RESOLUTIONS[resolution]
+    if orientation == "portrait":
+        expected = expected[::-1]
+    assert (spec.width, spec.height) == expected
+    assert spec.width % 64 == spec.height % 64 == 0
+
+
+def test_opt_in_retake_fps_and_strict_default():
+    retake = {"video": "asset_" + "a" * 32, "start": 0, "end": 1}
+    settings = Settings(_env_file=None, default_fps=30)
+    strict = normalize_request(GenerationRequest(prompt="x", retake=retake), settings, 1)
+    assert strict.fps == 30 and not strict.retake.normalize_source
+    retake["normalize_source"] = True
+    prepared = normalize_request(GenerationRequest(prompt="x", retake=retake), settings, 1)
+    assert prepared.fps == 24 and prepared.frames == 241
+    for fps in (25, 30):
+        with pytest.raises(ValidationError):
+            GenerationRequest(prompt="x", retake=retake, fps=fps)
+    with pytest.raises(ValidationError):
+        GenerationRequest(prompt="x", orientation="square")
+    with pytest.raises(ValidationError):
+        GenerationRequest(prompt="x", retake={**retake, "normalize_source": "true"})

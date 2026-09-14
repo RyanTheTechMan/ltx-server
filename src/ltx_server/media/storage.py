@@ -9,7 +9,9 @@ from uuid import uuid4
 from ltx_server.config import Settings
 
 Area = Literal["outputs", "tmp", "assets"]
-MANAGED_NAME = re.compile(r"(?:gen|asset)_[0-9a-f]{32}\.(?:mp4|partial|bin)$")
+MANAGED_NAME = re.compile(
+    r"(?:(?:gen|asset)_[0-9a-f]{32}\.(?:mp4|partial|bin)|gen_[0-9a-f]{32}\.source\.partial)$"
+)
 
 
 def new_id(prefix: Literal["gen", "asset"]) -> str:

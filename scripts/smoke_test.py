@@ -105,6 +105,9 @@ async def gpu_smoke(args: argparse.Namespace) -> None:
                 "video": await upload(args.retake_video),
                 "start": args.start,
                 "end": args.end,
+                "normalize_source": args.normalize_source,
+                "regenerate_video": args.retake_mode != "audio",
+                "regenerate_audio": args.retake_mode != "video",
             }
             if args.retake_video
             else None,
@@ -118,8 +121,9 @@ async def gpu_smoke(args: argparse.Namespace) -> None:
             GenerationRequest(
                 prompt=args.prompt,
                 duration=args.duration,
-                resolution="540p",
-                fps=24,
+                resolution=args.resolution,
+                orientation=args.orientation,
+                fps=args.fps,
                 seed=42,
                 generate_audio=not args.no_audio,
                 **inputs,
@@ -165,7 +169,12 @@ def main() -> None:
     parser.add_argument("--reference-video", help="Local IC-LoRA source (GPU mode)")
     parser.add_argument("--reference-lora", help="Registered IC-LoRA ID (GPU mode)")
     parser.add_argument("--lora", nargs=2, action="append", default=[], metavar=("ID", "SCALE"))
-    parser.add_argument("--retake-video", help="Local video matching the requested output grid")
+    parser.add_argument("--retake-video", help="Local retake source (strict grid by default)")
+    parser.add_argument("--normalize-source", action="store_true", help="Prepare retake at 24 FPS")
+    parser.add_argument("--retake-mode", choices=["both", "video", "audio"], default="both")
+    parser.add_argument("--resolution", choices=["540p", "720p", "1080p"], default="540p")
+    parser.add_argument("--orientation", choices=["landscape", "portrait"], default="landscape")
+    parser.add_argument("--fps", type=int, choices=[24, 25, 30], default=24)
     parser.add_argument("--start", type=float, default=0)
     parser.add_argument("--end", type=float, default=1)
     parser.add_argument(
@@ -189,6 +198,8 @@ def main() -> None:
         help="Run CUDA + model + T2V/audio/MP4 checks; stop the server first",
     )
     args = parser.parse_args()
+    if (args.normalize_source or args.retake_mode != "both") and not args.retake_video:
+        parser.error("--normalize-source and --retake-mode require --retake-video")
     if args.gpu:
         asyncio.run(gpu_smoke(args))
     else:
@@ -202,6 +213,9 @@ def main() -> None:
             or args.reference_lora
             or args.lora
             or args.retake_video
+            or args.orientation != "landscape"
+            or args.resolution != "540p"
+            or args.fps != 24
         ):
             parser.error("Conditioning options require --gpu")
         api_smoke(args.url)
